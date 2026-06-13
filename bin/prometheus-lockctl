@@ -1,0 +1,266 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
+LOCKSCREEN_CONFIG="${PROMETHEUS_LOCKSCREEN_CONFIG_NAME:-prometheus-lockscreen}"
+FEATURES_FILE="${PROMETHEUS_LOCKSCREEN_FEATURES_FILE:-$CONFIG_HOME/quickshell/$LOCKSCREEN_CONFIG/features.conf}"
+LOG_DIR="${PROMETHEUS_LOCKCTL_LOG_DIR:-$CACHE_HOME}"
+LOG_FILE="${PROMETHEUS_LOCKCTL_LOG_FILE:-$LOG_DIR/prometheus-lockctl.log}"
+LOCKSCREEN="${PROMETHEUS_LOCKSCREEN_BIN:-$HOME/.local/bin/prometheus-lockscreen}"
+RESUME_DISPLAYS="${PROMETHEUS_RESUME_DISPLAYS:-$HOME/.local/share/prometheus-lockscreen/scripts/resume-displays.sh}"
+HYPRCTL="${HYPRCTL:-hyprctl}"
+FACE_TRIGGER_FILE="${PROMETHEUS_LOCKSCREEN_FACE_TRIGGER_FILE:-$CACHE_HOME/prometheus-lockscreen-face-trigger}"
+POWER_LOCK_FILE="$LOG_DIR/prometheus-lockctl-power.lock"
+DPMS_ON_LOCK_FILE="$LOG_DIR/prometheus-lockctl-dpms-on.lock"
+DPMS_ON_STAMP_FILE="$LOG_DIR/prometheus-lockctl-dpms-on.stamp"
+LOCK_WAIT_SECONDS="${LOCK_WAIT_SECONDS:-5}"
+DPMS_ON_DEBOUNCE_SECONDS="${DPMS_ON_DEBOUNCE_SECONDS:-12}"
+
+mkdir -p "$LOG_DIR"
+
+log() {
+    printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*" >>"$LOG_FILE"
+}
+
+config_value() {
+    local key="$1"
+    local default="${2:-}"
+    local value
+
+    if [[ ! -r "$FEATURES_FILE" ]]; then
+        printf '%s\n' "$default"
+        return 0
+    fi
+
+    value="$(
+        awk -F= -v key="$key" '
+            /^[[:space:]]*(#|$)/ { next }
+            {
+                k=$1
+                sub(/^[[:space:]]+/, "", k)
+                sub(/[[:space:]]+$/, "", k)
+                if (k == key) {
+                    v=substr($0, index($0, "=") + 1)
+                    sub(/[[:space:]]+#.*/, "", v)
+                    sub(/^[[:space:]]+/, "", v)
+                    sub(/[[:space:]]+$/, "", v)
+                    print v
+                }
+            }
+        ' "$FEATURES_FILE" | tail -n 1
+    )"
+
+    printf '%s\n' "${value:-$default}"
+}
+
+is_truthy() {
+    case "${1,,}" in
+        1|true|yes|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+need_command() {
+    if command -v "$1" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    log "missing command: $1"
+    printf 'prometheus-lockctl: missing command: %s\n' "$1" >&2
+    return 1
+}
+
+lockscreen_running() {
+    local config_dir="${PROMETHEUS_LOCKSCREEN_CONFIG_DIR:-$CONFIG_HOME/quickshell/$LOCKSCREEN_CONFIG}"
+
+    if command -v quickshell >/dev/null 2>&1 \
+        && quickshell list --all 2>/dev/null | grep -Fq "$config_dir/shell.qml"; then
+        return 0
+    fi
+
+    pgrep -u "$(id -u)" -af "quickshell .*--config $LOCKSCREEN_CONFIG" >/dev/null 2>&1
+}
+
+session_locked() {
+    need_command "$HYPRCTL" >/dev/null || return 1
+    need_command jq >/dev/null || return 1
+
+    "$HYPRCTL" -j monitors 2>/dev/null \
+        | jq -e 'any(.[]?; (.solitaryBlockedBy // []) | index("LOCK"))' >/dev/null
+}
+
+session_locked_for_power() {
+    session_locked && return 0
+
+    [[ "${PROMETHEUS_LOCKCTL_DRY_RUN:-0}" == "1" \
+        && "${PROMETHEUS_LOCKCTL_ASSUME_LOCKED:-0}" == "1" ]]
+}
+
+face_auth_enabled() {
+    local configured="${PROMETHEUS_LOCKSCREEN_FACE_AUTH:-$(config_value face_auth 0)}"
+
+    is_truthy "$configured" \
+        && [[ -r /usr/lib/security/howdy/pam.py ]] \
+        && [[ -r /usr/lib/security/pam_python3.so || -x /usr/lib/security/pam_python3.so ]]
+}
+
+start_lock() {
+    if lockscreen_running; then
+        log "lock: lockscreen already running"
+        return 0
+    fi
+
+    if [[ ! -x "$LOCKSCREEN" ]]; then
+        log "lock: lockscreen wrapper is not executable: $LOCKSCREEN"
+        printf 'prometheus-lockctl: lockscreen wrapper is not executable: %s\n' "$LOCKSCREEN" >&2
+        return 1
+    fi
+
+    log "lock: starting $LOCKSCREEN_CONFIG"
+    setsid "$LOCKSCREEN" >/dev/null 2>&1 &
+}
+
+lock_and_wait() {
+    start_lock
+
+    local iterations=$(( LOCK_WAIT_SECONDS * 10 ))
+    local i
+
+    for ((i = 0; i < iterations; i++)); do
+        if session_locked; then
+            log "lock-and-wait: session lock active"
+            return 0
+        fi
+
+        sleep 0.1
+    done
+
+    log "lock-and-wait: timed out after ${LOCK_WAIT_SECONDS}s"
+    return 1
+}
+
+dpms_off_if_locked() {
+    if ! session_locked; then
+        log "dpms-off-if-locked: skipped, session is not locked"
+        return 0
+    fi
+
+    log "dpms-off-if-locked: disabling displays"
+    "$HYPRCTL" dispatch 'hl.dsp.dpms({ action = "disable" })'
+}
+
+dpms_on() {
+    exec 8>"$DPMS_ON_LOCK_FILE"
+    if ! flock -n 8; then
+        log "dpms-on: skipped, display recovery already running"
+        return 0
+    fi
+
+    local now last_elapsed last_run=0
+    now="$(date +%s)"
+    if [[ -r "$DPMS_ON_STAMP_FILE" ]]; then
+        read -r last_run <"$DPMS_ON_STAMP_FILE" || last_run=0
+    fi
+
+    if [[ "$last_run" =~ ^[0-9]+$ ]] && (( now >= last_run )); then
+        last_elapsed=$(( now - last_run ))
+        if (( last_elapsed < DPMS_ON_DEBOUNCE_SECONDS )); then
+            log "dpms-on: skipped, display recovery ran ${last_elapsed}s ago"
+            return 0
+        fi
+    fi
+
+    printf '%s\n' "$now" >"$DPMS_ON_STAMP_FILE"
+
+    if [[ -x "$RESUME_DISPLAYS" ]]; then
+        log "dpms-on: running resume display recovery"
+        "$RESUME_DISPLAYS"
+    else
+        log "dpms-on: resume display script unavailable: $RESUME_DISPLAYS"
+    fi
+
+    if face_auth_enabled && session_locked && lockscreen_running; then
+        log "dpms-on: signaling lockscreen face unlock"
+        date --iso-8601=nanoseconds >"$FACE_TRIGGER_FILE"
+    else
+        log "dpms-on: face unlock not signaled"
+    fi
+}
+
+sleep_from_lock() {
+    if lock_and_wait; then
+        power_action suspend
+        return $?
+    fi
+
+    log "sleep-from-lock: refused suspend because lock was not confirmed"
+    return 1
+}
+
+power_action() {
+    local action="${1:-}"
+
+    case "$action" in
+        suspend|poweroff|reboot) ;;
+        *)
+            log "power: unsupported action '$action'"
+            printf 'Usage: %s power suspend|poweroff|reboot\n' "$0" >&2
+            return 2
+            ;;
+    esac
+
+    if ! session_locked_for_power; then
+        log "power-$action: refused because session lock is not active"
+        return 1
+    fi
+
+    exec 7>"$POWER_LOCK_FILE"
+    if ! flock -n 7; then
+        log "power-$action: skipped, power action already in progress"
+        return 0
+    fi
+
+    if [[ "${PROMETHEUS_LOCKCTL_DRY_RUN:-0}" == "1" ]]; then
+        log "power-$action: dry-run would run systemctl $action"
+        return 0
+    fi
+
+    need_command systemctl >/dev/null || return 1
+
+    log "power-$action: running systemctl $action"
+    if systemctl "$action"; then
+        log "power-$action: systemctl accepted $action"
+        return 0
+    fi
+
+    local status=$?
+    log "power-$action: systemctl $action failed with exit $status"
+    return "$status"
+}
+
+case "${1:-}" in
+    lock)
+        start_lock
+        ;;
+    lock-and-wait)
+        lock_and_wait
+        ;;
+    dpms-off-if-locked)
+        dpms_off_if_locked
+        ;;
+    dpms-on)
+        dpms_on
+        ;;
+    sleep-from-lock)
+        sleep_from_lock
+        ;;
+    power)
+        power_action "${2:-}"
+        ;;
+    *)
+        printf 'Usage: %s lock|lock-and-wait|dpms-off-if-locked|dpms-on|power suspend|poweroff|reboot\n' "$0" >&2
+        exit 2
+        ;;
+esac

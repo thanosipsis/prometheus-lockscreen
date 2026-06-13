@@ -1,0 +1,25 @@
+# Prometheus lockscreen public configuration.
+# Copy to ~/.config/quickshell/prometheus-lockscreen/features.conf and edit.
+
+# Empty or "*" shows the interactive UI on every monitor while all monitors are
+# still covered by WlSessionLock. Set to a Hyprland monitor name to show the UI
+# on one screen only.
+target_screen=
+
+# PAM defaults use the system PAM directory. Install one of the examples in
+# examples/pam/ to /etc/pam.d/ and keep this in sync with the file name.
+pam_dir=/etc/pam.d
+pam_config=prometheus-lockscreen
+
+# Face auth is optional and disabled by default. Enabling it requires a matching
+# PAM file plus Howdy/pam_python on the target distro.
+face_auth=0
+face_pam_config=prometheus-lockscreen-face
+
+# The lockscreen buttons call prometheus-lockctl power suspend|poweroff|reboot.
+power_buttons=1
+
+# Small vertical movement to reduce static OLED burn-in risk.
+burn_in=1
+burn_in_shift_pixels=4
+burn_in_interval_seconds=45

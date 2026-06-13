@@ -1,0 +1,7 @@
+# Example PAM service for Arch/CachyOS.
+# Review this file before installing. PAM mistakes can lock you out.
+
+auth      include   system-auth
+account   include   system-auth
+password  include   system-auth
+session   include   system-auth

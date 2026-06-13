@@ -1,0 +1,9 @@
+# Optional Howdy face-auth example for Arch/CachyOS-style systems.
+# Install as /etc/pam.d/prometheus-lockscreen-face only after confirming these
+# module paths match your distro.
+
+auth      sufficient pam_python3.so /usr/lib/security/howdy/pam.py
+auth      include    system-auth
+account   include    system-auth
+password  include    system-auth
+session   include    system-auth
