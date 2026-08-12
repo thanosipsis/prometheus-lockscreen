@@ -12,11 +12,11 @@ LOCKSCREEN="${PROMETHEUS_LOCKSCREEN_BIN:-$HOME/.local/bin/prometheus-lockscreen}
 RESUME_DISPLAYS="${PROMETHEUS_RESUME_DISPLAYS:-$HOME/.local/share/prometheus-lockscreen/scripts/resume-displays.sh}"
 HYPRCTL="${HYPRCTL:-hyprctl}"
 FACE_TRIGGER_FILE="${PROMETHEUS_LOCKSCREEN_FACE_TRIGGER_FILE:-$CACHE_HOME/prometheus-lockscreen-face-trigger}"
-POWER_LOCK_FILE="$LOG_DIR/prometheus-lockctl-power.lock"
 DPMS_ON_LOCK_FILE="$LOG_DIR/prometheus-lockctl-dpms-on.lock"
 DPMS_ON_STAMP_FILE="$LOG_DIR/prometheus-lockctl-dpms-on.stamp"
 LOCK_WAIT_SECONDS="${LOCK_WAIT_SECONDS:-5}"
 DPMS_ON_DEBOUNCE_SECONDS="${DPMS_ON_DEBOUNCE_SECONDS:-12}"
+POWERCTL="${PROMETHEUS_POWERCTL:-$HOME/.local/bin/prometheus-powerctl}"
 
 mkdir -p "$LOG_DIR"
 
@@ -190,6 +190,13 @@ dpms_on() {
 }
 
 sleep_from_lock() {
+    if [[ "${PROMETHEUS_LOCKCTL_DRY_RUN:-0}" == "1" \
+        && "${PROMETHEUS_LOCKCTL_ASSUME_LOCKED:-0}" == "1" ]]; then
+        log "sleep-from-lock: dry-run using assumed lock"
+        power_action suspend
+        return $?
+    fi
+
     if lock_and_wait; then
         power_action suspend
         return $?
@@ -201,6 +208,7 @@ sleep_from_lock() {
 
 power_action() {
     local action="${1:-}"
+    local status
 
     case "$action" in
         suspend|poweroff|reboot) ;;
@@ -216,28 +224,21 @@ power_action() {
         return 1
     fi
 
-    exec 7>"$POWER_LOCK_FILE"
-    if ! flock -n 7; then
-        log "power-$action: skipped, power action already in progress"
-        return 0
+    if [[ ! -x "$POWERCTL" ]]; then
+        log "power-$action: backend is not executable: $POWERCTL"
+        printf 'prometheus-lockctl: power backend is not executable: %s\n' "$POWERCTL" >&2
+        return 69
     fi
 
-    if [[ "${PROMETHEUS_LOCKCTL_DRY_RUN:-0}" == "1" ]]; then
-        log "power-$action: dry-run would run systemctl $action"
+    log "power-$action: delegating to prometheus-powerctl"
+    if PROMETHEUS_POWERCTL_DRY_RUN="${PROMETHEUS_LOCKCTL_DRY_RUN:-0}" "$POWERCTL" run "$action"; then
+        log "power-$action: backend accepted $action"
         return 0
+    else
+        status=$?
+        log "power-$action: backend failed with exit $status"
+        return "$status"
     fi
-
-    need_command systemctl >/dev/null || return 1
-
-    log "power-$action: running systemctl $action"
-    if systemctl "$action"; then
-        log "power-$action: systemctl accepted $action"
-        return 0
-    fi
-
-    local status=$?
-    log "power-$action: systemctl $action failed with exit $status"
-    return "$status"
 }
 
 case "${1:-}" in
@@ -260,7 +261,7 @@ case "${1:-}" in
         power_action "${2:-}"
         ;;
     *)
-        printf 'Usage: %s lock|lock-and-wait|dpms-off-if-locked|dpms-on|power suspend|poweroff|reboot\n' "$0" >&2
+        printf 'Usage: %s lock|lock-and-wait|dpms-off-if-locked|dpms-on|sleep-from-lock|power suspend|poweroff|reboot\n' "$0" >&2
         exit 2
         ;;
 esac

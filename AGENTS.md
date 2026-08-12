@@ -7,7 +7,8 @@ This repo is only tested on Arch/CachyOS-style Hyprland sessions.
 1. Run syntax and lint checks:
 
    ```sh
-   bash -n bin/prometheus-lockscreen bin/prometheus-lockscreen-preview bin/prometheus-lockctl scripts/*.sh
+   bash -n bin/prometheus-lockscreen bin/prometheus-lockscreen-preview bin/prometheus-lockctl bin/prometheus-powerctl scripts/*.sh tests/*.sh
+   tests/test-powerctl.sh
    /usr/lib/qt6/bin/qmllint configs/prometheus-lockscreen/shell.qml
    ```
 
@@ -23,4 +24,3 @@ This repo is only tested on Arch/CachyOS-style Hyprland sessions.
 - Do not treat PAM examples as universal.
 - Do not publish local screenshots, usernames, monitor names, or logs.
 - Do not replace an existing lockscreen without creating a recovery path.
-

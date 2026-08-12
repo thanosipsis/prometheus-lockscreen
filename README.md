@@ -14,7 +14,10 @@ The lockscreen uses `WlSessionLock` for the real session lock. Every monitor is 
 - `prometheus-lockctl lock-and-wait`
 - `prometheus-lockctl dpms-off-if-locked`
 - `prometheus-lockctl dpms-on`
+- `prometheus-lockctl sleep-from-lock`
 - `prometheus-lockctl power suspend|poweroff|reboot`
+- `prometheus-powerctl capabilities --json`
+- `prometheus-powerctl run suspend|poweroff|reboot`
 
 ## Dependencies
 
@@ -27,6 +30,7 @@ Required:
 - `bash`
 - `jq`
 - `flock` from util-linux
+- `busctl` and `timeout` from systemd
 
 Optional:
 
@@ -41,4 +45,3 @@ Optional:
 - Password buffers are cleared on submit, failure, unlock, and power actions.
 
 See [INSTALL.md](INSTALL.md), [SECURITY.md](SECURITY.md), and [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
-

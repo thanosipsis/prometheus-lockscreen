@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
+LOG_DIR="${PROMETHEUS_POWERCTL_LOG_DIR:-$CACHE_HOME}"
+LOG_FILE="${PROMETHEUS_POWERCTL_LOG_FILE:-$LOG_DIR/prometheus-powerctl.log}"
+LOCK_FILE="${PROMETHEUS_POWERCTL_LOCK_FILE:-$LOG_DIR/prometheus-powerctl.lock}"
+BUSCTL="${PROMETHEUS_POWERCTL_BUSCTL:-busctl}"
+SYSTEMCTL="${PROMETHEUS_POWERCTL_SYSTEMCTL:-systemctl}"
+LOGINCTL="${PROMETHEUS_POWERCTL_LOGINCTL:-loginctl}"
+TIMEOUT="${PROMETHEUS_POWERCTL_TIMEOUT_BIN:-timeout}"
+COMMAND_TIMEOUT_SECONDS="${PROMETHEUS_POWERCTL_TIMEOUT_SECONDS:-5}"
+LOGIN1_SERVICE="org.freedesktop.login1"
+LOGIN1_PATH="/org/freedesktop/login1"
+LOGIN1_INTERFACE="org.freedesktop.login1.Manager"
+
+mkdir -p "$LOG_DIR"
+
+log() {
+    printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*" >>"$LOG_FILE"
+}
+
+have_command() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+run_bounded() {
+    if have_command "$TIMEOUT"; then
+        "$TIMEOUT" --foreground "${COMMAND_TIMEOUT_SECONDS}s" "$@"
+    else
+        "$@"
+    fi
+}
+
+action_method() {
+    case "$1" in
+        suspend) printf '%s\n' "Suspend" ;;
+        reboot) printf '%s\n' "Reboot" ;;
+        poweroff) printf '%s\n' "PowerOff" ;;
+        *) return 2 ;;
+    esac
+}
+
+normalize_state() {
+    case "$1" in
+        yes|no|na|challenge|inhibited|inhibitor-blocked|challenge-inhibitor-blocked)
+            printf '%s\n' "$1"
+            ;;
+        *)
+            printf '%s\n' "unknown"
+            ;;
+    esac
+}
+
+query_capability() {
+    local action="$1"
+    local method output state
+
+    method="$(action_method "$action")" || return 2
+    if ! have_command "$BUSCTL"; then
+        return 69
+    fi
+
+    if ! output="$(run_bounded "$BUSCTL" --system call \
+        "$LOGIN1_SERVICE" "$LOGIN1_PATH" "$LOGIN1_INTERFACE" "Can$method" 2>/dev/null)"; then
+        return 69
+    fi
+
+    state="$(sed -n 's/^s "\([^"]*\)"$/\1/p' <<<"$output")"
+    [[ -n "$state" ]] || return 69
+    normalize_state "$state"
+}
+
+capabilities_json() {
+    local action state available first=1
+
+    printf '{'
+    for action in suspend reboot poweroff; do
+        if state="$(query_capability "$action")"; then
+            :
+        else
+            state="unavailable"
+        fi
+        [[ "$state" == "yes" ]] && available=true || available=false
+        (( first == 1 )) || printf ','
+        first=0
+        printf '"%s":{"state":"%s","available":%s}' "$action" "$state" "$available"
+    done
+    printf '}\n'
+}
+
+run_fallback() {
+    local action="$1"
+    local attempted=0 status=127 candidate
+
+    for candidate in "$SYSTEMCTL" "$LOGINCTL"; do
+        have_command "$candidate" || continue
+        attempted=1
+        log "run-$action: trying fallback $candidate $action"
+        if run_bounded "$candidate" "$action"; then
+            log "run-$action: fallback $candidate accepted"
+            return 0
+        else
+            status=$?
+            log "run-$action: fallback $candidate failed with exit $status"
+        fi
+    done
+
+    if (( attempted == 0 )); then
+        log "run-$action: no fallback command is available"
+        return 69
+    fi
+    return "$status"
+}
+
+run_action() {
+    local action="$1"
+    local method state status
+
+    method="$(action_method "$action")" || {
+        printf 'prometheus-powerctl: unsupported action: %s\n' "$action" >&2
+        return 2
+    }
+
+    exec 9>"$LOCK_FILE"
+    if ! flock -n 9; then
+        log "run-$action: rejected because another power action is in progress"
+        printf 'prometheus-powerctl: another power action is already in progress\n' >&2
+        return 75
+    fi
+
+    if [[ "${PROMETHEUS_POWERCTL_ASSUME_AVAILABLE:-0}" == "1" ]]; then
+        state="yes"
+    elif state="$(query_capability "$action")"; then
+        :
+    else
+        status=$?
+        log "run-$action: login1 unavailable before dispatch (exit $status)"
+        if [[ "${PROMETHEUS_POWERCTL_DRY_RUN:-0}" == "1" ]]; then
+            log "run-$action: dry-run would try fallback commands"
+            return 0
+        fi
+        run_fallback "$action"
+        return $?
+    fi
+
+    if [[ "$state" != "yes" ]]; then
+        log "run-$action: refused because login1 capability is $state"
+        printf 'prometheus-powerctl: %s is not available (%s)\n' "$action" "$state" >&2
+        return 77
+    fi
+
+    if [[ "${PROMETHEUS_POWERCTL_DRY_RUN:-0}" == "1" ]]; then
+        log "run-$action: dry-run would call login1 $method"
+        return 0
+    fi
+
+    log "run-$action: calling login1 $method"
+    if run_bounded "$BUSCTL" --system call \
+        "$LOGIN1_SERVICE" "$LOGIN1_PATH" "$LOGIN1_INTERFACE" "$method" b true; then
+        log "run-$action: login1 $method accepted"
+        return 0
+    else
+        status=$?
+        log "run-$action: login1 $method failed with exit $status"
+        return "$status"
+    fi
+}
+
+case "${1:-}" in
+    capabilities)
+        [[ "${2:-}" == "--json" && $# -eq 2 ]] || {
+            printf 'Usage: prometheus-powerctl capabilities --json\n' >&2
+            exit 2
+        }
+        capabilities_json
+        ;;
+    run)
+        [[ $# -eq 2 ]] || {
+            printf 'Usage: prometheus-powerctl run suspend|reboot|poweroff\n' >&2
+            exit 2
+        }
+        run_action "$2"
+        ;;
+    *)
+        printf 'Usage: prometheus-powerctl capabilities --json | run suspend|reboot|poweroff\n' >&2
+        exit 2
+        ;;
+esac

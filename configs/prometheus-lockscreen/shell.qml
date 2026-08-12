@@ -23,6 +23,7 @@ ShellRoot {
     readonly property string faceAuthTriggerFile: Quickshell.env("PROMETHEUS_LOCKSCREEN_FACE_TRIGGER_FILE") || ((Quickshell.env("XDG_CACHE_HOME") || (Quickshell.env("HOME") + "/.cache")) + "/prometheus-lockscreen-face-trigger")
     readonly property bool faceAuthEnabled: envFlag("PROMETHEUS_LOCKSCREEN_FACE_AUTH", false)
     readonly property string lockController: Quickshell.env("PROMETHEUS_LOCKCTL") || "prometheus-lockctl"
+    readonly property string powerController: Quickshell.env("PROMETHEUS_POWERCTL") || "prometheus-powerctl"
     readonly property bool powerButtonsEnabled: envFlag("PROMETHEUS_LOCKSCREEN_POWER_BUTTONS", true)
     readonly property bool burnInProtectionEnabled: envFlag("PROMETHEUS_LOCKSCREEN_BURN_IN", true)
     readonly property int burnInShiftPixels: envInt("PROMETHEUS_LOCKSCREEN_BURN_IN_SHIFT_PIXELS", 4)
@@ -52,6 +53,8 @@ ShellRoot {
     property bool powerInProgress: false
     property string activePowerCommand: ""
     property string activePowerLabel: ""
+    property string powerErrorText: ""
+    property var powerCapabilities: ({})
     property bool faceAuthInProgress: false
     property bool faceAuthTriggerInitialized: false
     property string lastFaceAuthTrigger: ""
@@ -85,12 +88,35 @@ ShellRoot {
         pendingPassword = "";
     }
 
+    function powerAvailable(command) {
+        const capability = powerCapabilities[command];
+        return capability !== undefined && capability.available === true;
+    }
+
+    function refreshPowerCapabilities() {
+        if (!powerCapabilitiesProcess.running) {
+            powerCapabilitiesProcess.exec([powerController, "capabilities", "--json"]);
+        }
+    }
+
+    function finishPowerFailure(message) {
+        const label = activePowerLabel || "Power action";
+        powerRecoveryTimer.stop();
+        powerInProgress = false;
+        activePowerCommand = "";
+        activePowerLabel = "";
+        statusText = message || (label + " failed");
+        statusIsError = true;
+        refreshPowerCapabilities();
+    }
+
     Component.onCompleted: {
         if (!previewMode) {
             lock.locked = true;
         }
 
         uptimeProcess.running = true;
+        refreshPowerCapabilities();
         if (faceAuthEnabled) {
             faceTriggerProcess.running = true;
         }
@@ -247,9 +273,18 @@ ShellRoot {
             return;
         }
 
+        if (!powerAvailable(activePowerCommand)) {
+            statusText = activePowerLabel + " is unavailable";
+            statusIsError = true;
+            activePowerCommand = "";
+            activePowerLabel = "";
+            return;
+        }
+
         powerInProgress = true;
+        powerErrorText = "";
         statusIsError = false;
-        Quickshell.execDetached([lockController, "power", activePowerCommand]);
+        powerActionProcess.exec([lockController, "power", activePowerCommand]);
         powerRecoveryTimer.restart();
     }
 
@@ -342,6 +377,44 @@ ShellRoot {
         command: ["bash", "-lc", "awk '{d=int($1/86400); h=int(($1%86400)/3600); m=int(($1%3600)/60); if (d>0) printf \"%dd %02dh %02dm\", d, h, m; else printf \"%02dh %02dm\", h, m}' /proc/uptime"]
         stdout: StdioCollector {
             onStreamFinished: shell.uptimeText = this.text.trim()
+        }
+    }
+
+    Process {
+        id: powerCapabilitiesProcess
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    shell.powerCapabilities = JSON.parse(this.text.trim());
+                } catch (error) {
+                    shell.powerCapabilities = ({});
+                }
+            }
+        }
+        onExited: function(exitCode) {
+            if (exitCode !== 0) {
+                shell.powerCapabilities = ({});
+            }
+        }
+    }
+
+    Process {
+        id: powerActionProcess
+        stderr: StdioCollector {
+            onStreamFinished: shell.powerErrorText = this.text.trim()
+        }
+        onExited: function(exitCode) {
+            const command = shell.activePowerCommand;
+            if (exitCode !== 0) {
+                shell.finishPowerFailure(shell.powerErrorText.length > 0 ? shell.powerErrorText : "");
+            } else if (command === "suspend") {
+                powerRecoveryTimer.stop();
+                shell.powerInProgress = false;
+                shell.activePowerCommand = "";
+                shell.activePowerLabel = "";
+                shell.statusText = "";
+                shell.statusIsError = false;
+            }
         }
     }
 
@@ -820,7 +893,7 @@ ShellRoot {
                     Layout.preferredWidth: 82
                     Layout.preferredHeight: 28
                     label: "REBOOT"
-                    buttonEnabled: !shell.powerInProgress && shell.lockSecure
+                    buttonEnabled: !shell.powerInProgress && shell.lockSecure && shell.powerAvailable("reboot")
                     onClicked: shell.powerAction("Reboot")
                 }
 
@@ -829,7 +902,7 @@ ShellRoot {
                     Layout.preferredWidth: 74
                     Layout.preferredHeight: 28
                     label: "SLEEP"
-                    buttonEnabled: !shell.powerInProgress && shell.lockSecure
+                    buttonEnabled: !shell.powerInProgress && shell.lockSecure && shell.powerAvailable("suspend")
                     onClicked: shell.powerAction("Sleep")
                 }
 
@@ -839,7 +912,7 @@ ShellRoot {
                     Layout.preferredHeight: 28
                     label: "SHUTDOWN"
                     danger: true
-                    buttonEnabled: !shell.powerInProgress && shell.lockSecure
+                    buttonEnabled: !shell.powerInProgress && shell.lockSecure && shell.powerAvailable("poweroff")
                     onClicked: shell.powerAction("Shutdown")
                 }
             }
