@@ -10,6 +10,7 @@ From this repository:
 install -Dm755 bin/prometheus-lockscreen ~/.local/bin/prometheus-lockscreen
 install -Dm755 bin/prometheus-lockscreen-preview ~/.local/bin/prometheus-lockscreen-preview
 install -Dm755 bin/prometheus-lockctl ~/.local/bin/prometheus-lockctl
+install -Dm755 bin/prometheus-powerctl ~/.local/bin/prometheus-powerctl
 
 mkdir -p ~/.config/quickshell
 cp -R configs/prometheus-lockscreen ~/.config/quickshell/
@@ -56,7 +57,8 @@ Agents should follow this order:
 1. Run static checks before installing:
 
    ```sh
-   bash -n bin/prometheus-lockscreen bin/prometheus-lockscreen-preview bin/prometheus-lockctl scripts/*.sh
+   bash -n bin/prometheus-lockscreen bin/prometheus-lockscreen-preview bin/prometheus-lockctl bin/prometheus-powerctl scripts/*.sh tests/*.sh
+   tests/test-powerctl.sh
    /usr/lib/qt6/bin/qmllint configs/prometheus-lockscreen/shell.qml
    rg "LOCAL_HOME|LOCAL_USER|LOCAL_MONITOR|browser_specific_cleanup|vendored_dependency_dir" .
    ```
@@ -73,4 +75,3 @@ Agents should follow this order:
 6. Enable systemd user units only after preview and PAM review pass.
 
 Agents must not enable face auth by default.
-

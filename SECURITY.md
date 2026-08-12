@@ -36,3 +36,7 @@ Then set `face_auth=0` in the lockscreen config.
 PROMETHEUS_LOCKCTL_DRY_RUN=1 PROMETHEUS_LOCKCTL_ASSUME_LOCKED=1 prometheus-lockctl power suspend
 ```
 
+The controller delegates to `prometheus-powerctl`, which checks the matching
+systemd-logind capability and only accepts the action when logind reports
+`yes`. It calls the login1 D-Bus method directly and uses command fallbacks
+only when login1 is unavailable before dispatch.
