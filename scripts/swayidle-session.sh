@@ -16,10 +16,9 @@ if [[ ! -x "$LOCKCTL" ]]; then
 fi
 
 exec "$SWAYIDLE" -w \
-    timeout 300 "'$LOCKCTL' dpms-off-if-locked" \
+    timeout 120 "'$LOCKCTL' dpms-off-if-locked" \
         resume "'$LOCKCTL' dpms-on" \
-    timeout 600 "'$LOCKCTL' lock" \
-    timeout 900 "'$LOCKCTL' dpms-off-if-locked" \
+    timeout 600 "'$LOCKCTL' lock-and-wait && '$LOCKCTL' dpms-off-if-locked" \
         resume "'$LOCKCTL' dpms-on" \
     before-sleep "'$LOCKCTL' lock-and-wait" \
     after-resume "'$LOCKCTL' dpms-on" \
