@@ -41,6 +41,24 @@ test -r /usr/lib/security/pam_python3.so -o -x /usr/lib/security/pam_python3.so
 test -r /etc/pam.d/prometheus-lockscreen-face
 ```
 
+## Frozen Lock Screen After Resume
+
+If the whole display freezes after waking, check the compositor and graphics
+driver before assuming password focus is broken:
+
+```sh
+journalctl -b -1 -k
+ls ~/.cache/hyprland/hyprlandCrashReport*.txt
+```
+
+An NVIDIA/Hyprland setup was observed freezing and crashing after resume with
+`format XR30 isn't supported by primary backend` and a failed swapchain buffer
+allocation. Setting **all connected outputs** to `bitdepth = 8` in the active
+Hyprland monitor rules resolved the freeze in that setup. This is a graphics
+workaround, not a universal fix; save the original rules before trying it.
+Keep resolution and refresh rate unchanged initially, reload Hyprland, and
+check `hyprctl monitors -j` for an 8-bit format such as `XRGB8888`.
+
 ## Known qmllint Warnings
 
 `qmllint` should exit successfully. Expected warnings:

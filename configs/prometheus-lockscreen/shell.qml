@@ -42,12 +42,14 @@ ShellRoot {
     readonly property color panelSoft: theme.lockPanelSoft
     readonly property color danger: theme.danger
     readonly property int maxPasswordAttempts: 3
+    readonly property int maxFaceAuthAttempts: 3
     readonly property int passwordCooldownSeconds: 60
     property string passwordText: ""
     property string pendingPassword: ""
     property string statusText: ""
     property string uptimeText: "--"
     property int passwordAttempts: 0
+    property int faceAuthAttempts: 0
     property int cooldownRemaining: 0
     property bool authInProgress: false
     property bool powerInProgress: false
@@ -61,6 +63,7 @@ ShellRoot {
     property bool unlocking: false
     property bool statusIsError: false
     readonly property bool passwordLocked: cooldownRemaining > 0
+    readonly property bool faceAuthLocked: faceAuthAttempts >= maxFaceAuthAttempts
     property int burnInOffset: 0
     property bool burnInShiftUp: false
 
@@ -155,6 +158,12 @@ ShellRoot {
 
         resetLockIdleTimer();
 
+        if (!lock.secure) {
+            statusText = "Lock is still securing";
+            statusIsError = true;
+            return;
+        }
+
         if (passwordLocked) {
             statusText = "Too many attempts - wait " + cooldownRemaining + "s";
             statusIsError = true;
@@ -186,7 +195,7 @@ ShellRoot {
     }
 
     function startFaceUnlock() {
-        if (!faceAuthEnabled || previewMode || unlocking || passwordLocked || authInProgress || faceAuthInProgress || powerInProgress) {
+        if (!faceAuthEnabled || previewMode || unlocking || passwordLocked || faceAuthLocked || authInProgress || faceAuthInProgress || powerInProgress) {
             return;
         }
 
@@ -197,8 +206,7 @@ ShellRoot {
         facePam.user = authUser;
         if (!facePam.start()) {
             faceAuthInProgress = false;
-            statusText = "Face authentication unavailable";
-            statusIsError = true;
+            stopFaceUnlock("Face authentication unavailable");
         }
     }
 
@@ -223,6 +231,12 @@ ShellRoot {
             return;
         }
 
+        if (faceAuthLocked) {
+            statusText = "Face unlock stopped - enter password";
+            statusIsError = true;
+            return;
+        }
+
         startFaceUnlock();
     }
 
@@ -239,6 +253,26 @@ ShellRoot {
         }
 
         statusText = "Wrong password - " + triesLeft + " " + (triesLeft === 1 ? "try" : "tries") + " left";
+        statusIsError = true;
+    }
+
+    function registerFailedFaceAttempt() {
+        faceAuthAttempts = Math.min(faceAuthAttempts + 1, maxFaceAuthAttempts);
+        const triesLeft = Math.max(maxFaceAuthAttempts - faceAuthAttempts, 0);
+
+        if (triesLeft === 0) {
+            statusText = "Face unlock stopped - enter password";
+            statusIsError = true;
+            return;
+        }
+
+        statusText = "Face not recognized - " + triesLeft + " " + (triesLeft === 1 ? "try" : "tries") + " left";
+        statusIsError = true;
+    }
+
+    function stopFaceUnlock(message) {
+        faceAuthAttempts = maxFaceAuthAttempts;
+        statusText = message;
         statusIsError = true;
     }
 
@@ -482,16 +516,18 @@ ShellRoot {
 
             if (result === PamResult.Success) {
                 shell.unlock();
+            } else if (result === PamResult.Error) {
+                shell.stopFaceUnlock("Face authentication unavailable");
+            } else if (result === PamResult.MaxTries) {
+                shell.stopFaceUnlock("Face unlock stopped - enter password");
             } else if (!shell.unlocking) {
-                shell.statusText = "Face not recognized - enter password";
-                shell.statusIsError = true;
+                shell.registerFailedFaceAttempt();
             }
         }
 
         onError: {
             shell.faceAuthInProgress = false;
-            shell.statusText = "Face authentication unavailable";
-            shell.statusIsError = true;
+            shell.stopFaceUnlock("Face authentication unavailable");
         }
     }
 

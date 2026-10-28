@@ -43,5 +43,14 @@ Optional:
 - PAM defaults to `/etc/pam.d`; examples are shipped, not installed automatically.
 - Power buttons are gated by `WlSessionLock.secure` and by a Hyprland lock-state check in `prometheus-lockctl`.
 - Password buffers are cleared on submit, failure, unlock, and power actions.
+- Face unlock stops after three failed attempts per lockscreen instance, or when PAM reports an error or exhausted attempts; password authentication remains available.
+
+## Idle Timings
+
+The optional `swayidle` script turns displays off after two minutes of inactivity
+when already locked. At ten minutes idle, it locks the session, waits for secure
+lock confirmation, then immediately turns displays off. Suspend remains at one
+hour idle. Input wakes displays and resets idle timers; timers measure inactivity,
+not elapsed time since the lockscreen appeared.
 
 See [INSTALL.md](INSTALL.md), [SECURITY.md](SECURITY.md), and [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
